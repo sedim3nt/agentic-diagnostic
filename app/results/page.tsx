@@ -14,6 +14,13 @@ import {
   COHORT_PERCENTILES,
   type DiagnosticAnswers,
 } from '@/lib/diagnostic';
+import { saveDiagnosticToAirtable } from '@/lib/airtable';
+
+interface CategoryScore {
+  name: string;
+  score: number;
+  interpretation: string;
+}
 
 const DIMENSION_LABELS = {
   fleetDepth: 'Fleet Depth',
@@ -58,6 +65,18 @@ function ResultsInner() {
   }, [answers, allAnswered]);
 
   const tier = useMemo(() => scores ? getTier(scores.overall) : null, [scores]);
+
+  // Save to Airtable on first load
+  const [atSaved, setAtSaved] = useState(false);
+  useEffect(() => {
+    if (!scores || !allAnswered || atSaved || !tier) return;
+    setAtSaved(true);
+    saveDiagnosticToAirtable({
+      scores: scores as unknown as Record<string, number>,
+      tier: tier.name,
+      overallScore: scores.overall,
+    }).catch(console.error);
+  }, [scores, allAnswered, atSaved, tier]);
 
   // Stable cohort percentiles (computed once)
   const cohortPercentiles = useMemo(() => {
@@ -373,6 +392,9 @@ function ResultsInner() {
           </div>
         )}
 
+        {/* AI Analysis */}
+        <AnalysisSection scores={scores} />
+
         {/* CTAs */}
         <div style={{
           display: 'grid',
@@ -472,6 +494,156 @@ function ResultsInner() {
         }
       `}</style>
     </main>
+  );
+}
+
+function AnalysisSection({ scores }: { scores: { fleetDepth: number; governance: number; autonomy: number; composability: number; compression: number; overall: number } }) {
+  const [analysis, setAnalysis] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleAnalyze = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const categories: CategoryScore[] = DIMENSION_KEYS.map(key => ({
+        name: DIMENSION_LABELS[key],
+        score: scores[key],
+        interpretation: DIMENSION_INTERPRETATIONS[key](scores[key]),
+      }));
+
+      const res = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scores: { overall: scores.overall }, categories }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Analysis failed');
+      }
+
+      const data = await res.json();
+      setAnalysis(data.analysis);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="card-glass" style={{
+      padding: '28px',
+      marginBottom: '24px',
+      animation: 'fadeIn 600ms ease 700ms backwards',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
+        <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--signal)', boxShadow: 'var(--signal-glow)' }} />
+        <span className="font-display" style={{ fontSize: '11px', letterSpacing: '0.1em', color: 'var(--text-tertiary)', textTransform: 'uppercase' }}>
+          The Compression Analyst
+        </span>
+      </div>
+
+      {!analysis && !loading && (
+        <div style={{ textAlign: 'center', padding: '20px 0' }}>
+          <p style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: '20px', lineHeight: 1.6 }}>
+            Get a personalized AI interpretation of your results — including cross-dimension patterns and a 7-day decompression protocol.
+          </p>
+          <button
+            onClick={handleAnalyze}
+            disabled={loading}
+            style={{
+              padding: '12px 28px',
+              background: 'linear-gradient(135deg, rgba(0,229,204,0.15) 0%, rgba(74,158,191,0.1) 100%)',
+              border: '1px solid var(--signal)',
+              borderRadius: '6px',
+              color: 'var(--signal)',
+              fontFamily: 'var(--font-display)',
+              fontSize: '13px',
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              cursor: 'pointer',
+              transition: 'all 200ms ease',
+              boxShadow: 'var(--signal-glow)',
+            }}
+            onMouseEnter={e => {
+              (e.target as HTMLButtonElement).style.background = 'rgba(0,229,204,0.2)';
+              (e.target as HTMLButtonElement).style.boxShadow = '0 0 30px rgba(0,229,204,0.5)';
+            }}
+            onMouseLeave={e => {
+              (e.target as HTMLButtonElement).style.background = 'linear-gradient(135deg, rgba(0,229,204,0.15) 0%, rgba(74,158,191,0.1) 100%)';
+              (e.target as HTMLButtonElement).style.boxShadow = 'var(--signal-glow)';
+            }}
+          >
+            Analyze My Results
+          </button>
+        </div>
+      )}
+
+      {loading && (
+        <div style={{ textAlign: 'center', padding: '40px 0' }}>
+          <div style={{
+            width: '40px', height: '40px', margin: '0 auto 16px',
+            border: '2px solid rgba(0,229,204,0.2)',
+            borderTop: '2px solid var(--signal)',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite',
+          }} />
+          <p className="font-display" style={{ fontSize: '12px', color: 'var(--signal)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+            The Compression Analyst is reading your composition...
+          </p>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      )}
+
+      {error && (
+        <div style={{ textAlign: 'center', padding: '20px 0' }}>
+          <p style={{ color: '#ff6b6b', fontSize: '14px', marginBottom: '16px' }}>{error}</p>
+          <button
+            onClick={handleAnalyze}
+            style={{
+              padding: '10px 24px',
+              background: 'none',
+              border: '1px solid var(--border-default)',
+              borderRadius: '6px',
+              color: 'var(--text-secondary)',
+              fontFamily: 'var(--font-display)',
+              fontSize: '12px',
+              cursor: 'pointer',
+            }}
+          >
+            Try Again
+          </button>
+        </div>
+      )}
+
+      {analysis && (
+        <div>
+          <div style={{
+            fontSize: '14px',
+            color: 'var(--text-secondary)',
+            lineHeight: 1.75,
+            whiteSpace: 'pre-wrap',
+          }}>
+            {analysis}
+          </div>
+          <div style={{
+            marginTop: '20px',
+            paddingTop: '16px',
+            borderTop: '1px solid var(--border-subtle)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+          }}>
+            <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: 'var(--text-muted)' }} />
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)', letterSpacing: '0.04em' }}>
+              AI-generated analysis. Not a clinical assessment.
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
