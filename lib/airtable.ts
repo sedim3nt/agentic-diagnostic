@@ -1,5 +1,9 @@
-const AIRTABLE_BASE = 'app5N0hqqzLb6iDoG';
-const AIRTABLE_PAT = process.env.NEXT_PUBLIC_AIRTABLE_PAT || '';
+// NOTE: This module is server-only. It is imported exclusively by the
+// app/api/lead Route Handler and must never be imported from a Client
+// Component, or the Airtable PAT would be exposed in the browser bundle.
+const AIRTABLE_BASE = process.env.AIRTABLE_BASE_ID || 'app5N0hqqzLb6iDoG';
+const AIRTABLE_TABLE = process.env.AIRTABLE_TABLE_NAME || 'Diagnostics';
+const AIRTABLE_PAT = process.env.AIRTABLE_PAT || '';
 
 export async function saveDiagnosticToAirtable(data: {
   email?: string;
@@ -8,9 +12,14 @@ export async function saveDiagnosticToAirtable(data: {
   overallScore: number;
   shareId?: string;
 }) {
+  if (!AIRTABLE_PAT) {
+    console.error('Airtable not configured: AIRTABLE_PAT is missing');
+    return null;
+  }
+
   try {
     const res = await fetch(
-      `https://api.airtable.com/v0/${AIRTABLE_BASE}/Diagnostics`,
+      `https://api.airtable.com/v0/${AIRTABLE_BASE}/${encodeURIComponent(AIRTABLE_TABLE)}`,
       {
         method: 'POST',
         headers: {

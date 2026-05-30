@@ -14,8 +14,6 @@ import {
   COHORT_PERCENTILES,
   type DiagnosticAnswers,
 } from '@/lib/diagnostic';
-import { saveDiagnosticToAirtable } from '@/lib/airtable';
-
 interface CategoryScore {
   name: string;
   score: number;
@@ -66,17 +64,26 @@ function ResultsInner() {
 
   const tier = useMemo(() => scores ? getTier(scores.overall) : null, [scores]);
 
-  // Save to Airtable on first load
+  // Save an anonymous score row via server route on first load (Airtable write
+  // happens server-side). If the visitor later submits an email, the LeadCapture
+  // component writes an enriched row keyed by the same shareId so the lead can be
+  // followed up on. shareId ties the two rows together.
+  const shareId = useMemo(() => searchParams.toString(), [searchParams]);
   const [atSaved, setAtSaved] = useState(false);
   useEffect(() => {
     if (!scores || !allAnswered || atSaved || !tier) return;
     setAtSaved(true);
-    saveDiagnosticToAirtable({
-      scores: scores as unknown as Record<string, number>,
-      tier: tier.name,
-      overallScore: scores.overall,
+    fetch('/api/lead', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scores: scores as unknown as Record<string, number>,
+        tier: tier.name,
+        overallScore: scores.overall,
+        shareId,
+      }),
     }).catch(console.error);
-  }, [scores, allAnswered, atSaved, tier]);
+  }, [scores, allAnswered, atSaved, tier, shareId]);
 
   // Stable cohort percentiles (computed once)
   const cohortPercentiles = useMemo(() => {
@@ -395,6 +402,9 @@ function ResultsInner() {
         {/* AI Analysis */}
         <AnalysisSection scores={scores} />
 
+        {/* Lead capture */}
+        <LeadCapture scores={scores} tier={tier.name} shareId={shareId} />
+
         {/* CTAs */}
         <div style={{
           display: 'grid',
@@ -642,6 +652,121 @@ function AnalysisSection({ scores }: { scores: { fleetDepth: number; governance:
             </span>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+function LeadCapture({
+  scores,
+  tier,
+  shareId,
+}: {
+  scores: { fleetDepth: number; governance: number; autonomy: number; composability: number; compression: number; overall: number };
+  tier: string;
+  shareId: string;
+}) {
+  const [email, setEmail] = useState('');
+  const [status, setStatus] = useState<'idle' | 'submitting' | 'done' | 'error'>('idle');
+
+  const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!valid || status === 'submitting') return;
+    setStatus('submitting');
+    try {
+      const res = await fetch('/api/lead', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: email.trim(),
+          scores: scores as unknown as Record<string, number>,
+          tier,
+          overallScore: scores.overall,
+          shareId,
+        }),
+      });
+      if (!res.ok) throw new Error('save failed');
+      setStatus('done');
+    } catch {
+      setStatus('error');
+    }
+  };
+
+  if (status === 'done') {
+    return (
+      <div className="card-glass" style={{ padding: '28px', marginBottom: '24px', animation: 'fadeIn 600ms ease' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+          <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--signal)', boxShadow: 'var(--signal-glow)' }} />
+          <span className="font-display" style={{ fontSize: '11px', letterSpacing: '0.1em', color: 'var(--text-tertiary)', textTransform: 'uppercase' }}>
+            You&apos;re on the list
+          </span>
+        </div>
+        <p style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+          Your diagnostic is logged with the CMPRSSN field study. We&apos;ll reach out with cohort findings and frontier notes. Book a call below to go deeper now.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card-glass" style={{ padding: '28px', marginBottom: '24px', animation: 'fadeIn 600ms ease 750ms backwards' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+        <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--signal)', boxShadow: 'var(--signal-glow)' }} />
+        <span className="font-display" style={{ fontSize: '11px', letterSpacing: '0.1em', color: 'var(--text-tertiary)', textTransform: 'uppercase' }}>
+          Get Your Cohort Report
+        </span>
+      </div>
+      <p style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: '18px' }}>
+        Add your email to receive the CMPRSSN Q2 2026 field-study findings — where your composition really sits once the full cohort lands. No spam, just the data.
+      </p>
+      <form onSubmit={handleSubmit} style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => { setEmail(e.target.value); if (status === 'error') setStatus('idle'); }}
+          placeholder="you@domain.com"
+          aria-label="Email address"
+          style={{
+            flex: '1 1 220px',
+            minWidth: 0,
+            padding: '12px 16px',
+            background: 'rgba(14,26,46,0.6)',
+            border: '1px solid var(--border-default)',
+            borderRadius: '6px',
+            color: 'var(--frost)',
+            fontFamily: 'var(--font-body)',
+            fontSize: '14px',
+            outline: 'none',
+          }}
+        />
+        <button
+          type="submit"
+          disabled={!valid || status === 'submitting'}
+          style={{
+            padding: '12px 24px',
+            background: valid ? 'linear-gradient(135deg, rgba(0,229,204,0.15) 0%, rgba(74,158,191,0.1) 100%)' : 'rgba(14,26,46,0.5)',
+            border: `1px solid ${valid ? 'var(--signal)' : 'var(--border-default)'}`,
+            borderRadius: '6px',
+            color: valid ? 'var(--signal)' : 'var(--text-muted)',
+            fontFamily: 'var(--font-display)',
+            fontSize: '13px',
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            cursor: valid && status !== 'submitting' ? 'pointer' : 'not-allowed',
+            transition: 'all 200ms ease',
+            boxShadow: valid ? 'var(--signal-glow)' : 'none',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {status === 'submitting' ? 'Sending…' : 'Send It'}
+        </button>
+      </form>
+      {status === 'error' && (
+        <p style={{ fontSize: '12px', color: '#ff6b6b', marginTop: '10px' }}>
+          Couldn&apos;t save that — try again in a moment.
+        </p>
       )}
     </div>
   );
